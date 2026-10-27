@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Cavion Pool 3D</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#08120f;color:#fff;font-family:system-ui,-apple-system,Arial}
+#game{display:block;width:100%;height:100%;touch-action:none}
+#hud{position:fixed;left:12px;right:12px;top:12px;display:flex;gap:8px;align-items:center;justify-content:space-between;pointer-events:none}
+.badge{background:#06100ddd;border:1px solid #ffffff25;border-radius:12px;padding:8px 11px;font-size:12px;backdrop-filter:blur(8px)}
+#controls{position:fixed;left:12px;right:12px;bottom:14px;display:flex;gap:10px;align-items:center}
+#powerbox{flex:1;background:#06100ddd;border:1px solid #ffffff25;border-radius:12px;padding:9px 12px;font-size:12px}
+input{width:100%;accent-color:#ff7b26}
+button{border:0;border-radius:12px;background:#ff7b26;color:#fff;font-weight:800;padding:14px 18px;font-size:14px}
+#hint{position:fixed;top:58px;left:12px;right:12px;text-align:center;color:#d7e8dd;font-size:12px;text-shadow:0 2px 5px #000}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud"><div class="badge">🎱 CAVION POOL 3D</div><div class="badge" id="count">Balls: 15</div></div>
+<div id="hint">Drag on the table to aim • Set power • Tap SHOOT</div>
+<div id="controls"><div id="powerbox">POWER <span id="pv">55%</span><input id="power" type="range" min="10" max="100" value="55"></div><button id="shoot">SHOOT</button><button id="reset" style="background:#233a32">RESET</button></div>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+const canvas=document.querySelector('#game');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+const scene=new THREE.Scene();scene.background=new THREE.Color('#07130f');
+const camera=new THREE.PerspectiveCamera(37,innerWidth/innerHeight,.1,100);camera.position.set(0,10,13);camera.lookAt(0,0,0);
+scene.add(new THREE.HemisphereLight(0xcceeff,0x182016,2.0));
+const key=new THREE.DirectionalLight(0xffe2b4,3.0);key.position.set(-4,9,5);key.castShadow=true;scene.add(key);
+const fill=new THREE.PointLight(0x6ddbb1,35,18);fill.position.set(4,5,-3);scene.add(fill);
+const tableW=9.2,tableH=4.8,ballR=.19,limitX=tableW/2-ballR,limitZ=tableH/2-ballR;
+const mat=(color,roughness=.45,metalness=0)=>new THREE.MeshStandardMaterial({color,roughness,metalness});
+const wood=mat('#65371f'),edge=mat('#9b5a2c'),felt=mat('#087347',.8),dark=mat('#050907'),white=mat('#f6f2df',.2);
+function box(w,h,d,material,x,y,z){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),material);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;scene.add(m);return m;}
+box(10,.35,5.6,wood,0,-.27,0);box(9.7,.18,5.3,edge,0,-.03,0);box(tableW,.12,tableH,felt,0,.08,0);
+// Rails around perimeter
+box(9.65,.32,.25,wood,0,.20,-2.68);box(9.65,.32,.25,wood,0,.20,2.68);
+box(.25,.32,5.1,wood,-4.82,.20,0);box(.25,.32,5.1,wood,4.82,.20,0);
+// Cushion inner rails with six gaps around pockets
+for(const x of [-2.45,2.45]){box(4.1,.18,.12,mat('#1b573a'),x,.18,-2.42);box(4.1,.18,.12,mat('#1b573a'),x,.18,2.42)}
+box(.12,.18,1.9,mat('#1b573a'),-4.42,.18,0);box(.12,.18,1.9,mat('#1b573a'),4.42,.18,0);
+const pocketPositions=[[-4.5,-2.5],[0,-2.5],[4.5,-2.5],[-4.5,2.5],[0,2.5],[4.5,2.5]];
+for(const [x,z] of pocketPositions){const p=new THREE.Mesh(new THREE.CylinderGeometry(.29,.31,.08,32),dark);p.position.set(x,.17,z);p.receiveShadow=true;scene.add(p)}
+// table markings
+const lineMat=new THREE.LineBasicMaterial({color:0x9bd4b3,transparent:true,opacity:.55});
+function line(points){const g=new THREE.BufferGeometry().setFromPoints(points.map(p=>new THREE.Vector3(p[0],.145,p[1])));scene.add(new THREE.Line(g,lineMat))}
+line([[-3.05,-2.2],[-3.05,2.2]]);
+const ring=new THREE.Mesh(new THREE.TorusGeometry(.035,.008,6,32),mat('#b5dfc7'));ring.rotation.x=Math.PI/2;ring.position.set(-3.05,.15,0);scene.add(ring);
+const sphereGeo=new THREE.SphereGeometry(ballR,32,24);
+const colors=['#f5d442','#2377bf','#d93636','#8749b8','#ed8a24','#1e9b5a','#7b2424','#171717','#f5d442','#2377bf','#d93636','#8749b8','#ed8a24','#1e9b5a','#7b2424'];
+let balls=[],cue,aimDir=new THREE.Vector3(1,0,0),aimLine,cueStick,shotBusy=false;
+const ballGroup=new THREE.Group();scene.add(ballGroup);
+function makeBall(color,num,striped=false){const group=new THREE.Group();const ball=new THREE.Mesh(sphereGeo,mat(color,.19,.03));ball.castShadow=true;ball.receiveShadow=true;group.add(ball);
+ if(striped){const band=new THREE.Mesh(new THREE.TorusGeometry(ballR*.88,.055,8,40),mat('#f5f0df',.3));band.rotation.x=Math.PI/2;group.add(band)}
+ if(num>0){const disk=new THREE.Mesh(new THREE.CircleGeometry(.075,24),white);disk.position.set(0,0,ballR*.985);group.add(disk);const canvas2=document.createElement('canvas');canvas2.width=64;canvas2.height=64;const c=canvas2.getContext('2d');c.fillStyle='#151515';c.font='bold 40px Arial';c.textAlign='center';c.textBaseline='middle';c.fillText(num,32,34);const tex=new THREE.CanvasTexture(canvas2);const label=new THREE.Mesh(new THREE.CircleGeometry(.045,24),new THREE.MeshBasicMaterial({map:tex,transparent:true}));label.position.set(0,0,ballR*1.01);group.add(label)}
+ ballGroup.add(group);return {mesh:group,color,num,vx:0,vz:0,alive:true,striped}}
+function reset(){for(const b of balls)ballGroup.remove(b.mesh);balls=[];cue=makeBall('#f8f6e9',0);cue.mesh.position.set(-2.6,ballR+.12,0);balls.push(cue);let n=0;for(let row=0;row<5;row++)for(let col=0;col<=row;col++){const b=makeBall(colors[n%colors.length],n+1,n>=8);b.mesh.position.set(1.55+row*.39,ballR+.12,(col-row/2)*.42);balls.push(b);n++}aimDir.set(1,0,0);shotBusy=false;document.querySelector('#count').textContent='Balls: 15';}
+reset();
+// Aim line and cue stick
+const aimGeom=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(1,0,0)]);
+aimLine=new THREE.Line(aimGeom,new THREE.LineDashedMaterial({color:0xffffff,dashSize:.16,gapSize:.1,transparent:true,opacity:.8}));aimLine.computeLineDistances();scene.add(aimLine);
+cueStick=new THREE.Mesh(new THREE.CylinderGeometry(.035,.055,2.4,16),mat('#c89b62',.35));cueStick.rotation.z=Math.PI/2;scene.add(cueStick);
+const raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2(),tablePlane=new THREE.Plane(new THREE.Vector3(0,1,0),-.15),hit=new THREE.Vector3();let dragging=false;
+function pointerMove(e){const rect=canvas.getBoundingClientRect();pointer.x=(e.clientX-rect.left)/rect.width*2-1;pointer.y=-(e.clientY-rect.top)/rect.height*2+1;raycaster.setFromCamera(pointer,camera);if(raycaster.ray.intersectPlane(tablePlane,hit)&&cue?.alive){const dx=hit.x-cue.mesh.position.x,dz=hit.z-cue.mesh.position.z;const len=Math.hypot(dx,dz);if(len>.1)aimDir.set(dx/len,0,dz/len)}}
+canvas.addEventListener('pointerdown',e=>{dragging=true;canvas.setPointerCapture(e.pointerId);pointerMove(e)});canvas.addEventListener('pointermove',e=>{if(dragging)pointerMove(e)});canvas.addEventListener('pointerup',()=>dragging=false);
+const power=document.querySelector('#power');power.addEventListener('input',()=>document.querySelector('#pv').textContent=power.value+'%');
+document.querySelector('#shoot').addEventListener('click',()=>{if(!cue?.alive||shotBusy)return;const speed=.035+Number(power.value)*.0013;cue.vx=aimDir.x*speed;cue.vz=aimDir.z*speed;shotBusy=true});
+document.querySelector('#reset').addEventListener('click',reset);
+function animate(){requestAnimationFrame(animate);let moving=false;for(const b of balls){if(!b.alive)continue;b.mesh.position.x+=b.vx;b.mesh.position.z+=b.vz;b.vx*=.988;b.vz*=.988;if(Math.abs(b.vx)<.001)b.vx=0;if(Math.abs(b.vz)<.001)b.vz=0;if(b.vx||b.vz)moving=true;
+ if(b.mesh.position.x<-limitX||b.mesh.position.x>limitX)b.vx*=-.86;if(b.mesh.position.z<-limitZ||b.mesh.position.z>limitZ)b.vz*=-.86;b.mesh.position.x=Math.max(-limitX,Math.min(limitX,b.mesh.position.x));b.mesh.position.z=Math.max(-limitZ,Math.min(limitZ,b.mesh.position.z));
+ for(const [px,pz] of pocketPositions)if(Math.hypot(b.mesh.position.x-px,b.mesh.position.z-pz)<.28){b.alive=false;ballGroup.remove(b.mesh);if(b.num===0){document.querySelector('#hint').textContent='Cue ball pocketed — tap RESET to play again';cue=null}else document.querySelector('#count').textContent='Balls: '+balls.filter(x=>x.alive&&x.num>0).length;break}}
+ }
+ for(let i=0;i<balls.length;i++)for(let j=i+1;j<balls.length;j++){const a=balls[i],b=balls[j];if(!a.alive||!b.alive)continue;let dx=b.mesh.position.x-a.mesh.position.x,dz=b.mesh.position.z-a.mesh.position.z,d=Math.hypot(dx,dz);if(d>0&&d<ballR*2){const nx=dx/d,nz=dz/d,over=ballR*2-d;a.mesh.position.x-=nx*over/2;a.mesh.position.z-=nz*over/2;b.mesh.position.x+=nx*over/2;b.mesh.position.z+=nz*over/2;const rel=(a.vx-b.vx)*nx+(a.vz-b.vz)*nz;if(rel>0){const imp=rel*.96;a.vx-=imp*nx;a.vz-=imp*nz;b.vx+=imp*nx;b.vz+=imp*nz}}}
+ if(cue?.alive){const p=cue.mesh.position;const points=[new THREE.Vector3(p.x,p.y+.03,p.z),new THREE.Vector3(p.x+aimDir.x*3,p.y+.03,p.z+aimDir.z*3)];aimLine.geometry.setFromPoints(points);aimLine.computeLineDistances();cueStick.position.set(p.x-aimDir.x*(1.3+Number(power.value)*.003),p.y,p.z-aimDir.z*(1.3+Number(power.value)*.003));cueStick.rotation.set(0,0,Math.PI/2);cueStick.rotation.y=Math.atan2(aimDir.z,aimDir.x);cueStick.visible=!moving;}
+ else{aimLine.visible=false;cueStick.visible=false}
+ if(!moving)shotBusy=false;
+ renderer.render(scene,camera)}
+animate();
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,2))});
+</script>
+</body>
+</html>
